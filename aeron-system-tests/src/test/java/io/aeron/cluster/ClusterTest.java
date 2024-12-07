@@ -17,6 +17,7 @@ package io.aeron.cluster;
 
 import io.aeron.Aeron;
 import io.aeron.Counter;
+import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
@@ -27,6 +28,7 @@ import io.aeron.cluster.client.ControlledEgressListener;
 import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.*;
 import io.aeron.cluster.service.ClientSession;
+import io.aeron.cluster.service.ClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.cluster.service.SnapshotDurationTracker;
 import io.aeron.driver.MediaDriver;
@@ -71,11 +73,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntFunction;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 
 import static io.aeron.cluster.client.AeronCluster.SESSION_HEADER_LENGTH;
 import static io.aeron.cluster.service.Cluster.Role.FOLLOWER;
 import static io.aeron.cluster.service.Cluster.Role.LEADER;
+import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_TYPE_ID;
 import static io.aeron.logbuffer.FrameDescriptor.*;
 import static io.aeron.protocol.DataHeaderFlyweight.*;
 import static io.aeron.status.HeartbeatTimestamp.HEARTBEAT_TYPE_ID;
@@ -329,6 +333,106 @@ class ClusterTest
 
         cluster.sendAndAwaitMessages(10);
         cluster.awaitServiceMessagePredicate(cluster.awaitLeader(), atMost(10));
+    }
+
+    @Test
+    @InterruptAfter(20)
+    void shouldRestartAfterSnapshotAndAdditionOfNewService()
+    {
+        cluster = aCluster().withStaticNodes(3).start();
+        systemTestWatcher.cluster(cluster);
+
+        final TestNode leaderNode = cluster.awaitLeader();
+        assertNotNull(cluster.asyncConnectClient());
+
+        cluster.sendAndAwaitMessages(10);
+        cluster.awaitServiceMessagePredicate(cluster.awaitLeader(), atMost(10));
+
+        cluster.takeSnapshot(leaderNode);
+        cluster.awaitSnapshotCount(1);
+
+        for (int i = 0; i <= 2; i++)
+        {
+            final TestNode node = cluster.node(i);
+
+            try (AeronArchive aeronArchive = AeronArchive.connect(node.consensusModule().context().archiveContext());
+                RecordingLog recordingLog = node.consensusModule().context().recordingLog())
+            {
+                // manually create a snapshot for the new service
+                final ExclusivePublication publication = aeronArchive.addRecordedExclusivePublication(
+                    "aeron:ipc?alias=new-svc-snapshot", 123 + i);
+
+                while (!publication.isConnected())
+                {
+                    Tests.yield();
+                }
+
+                final RecordingLog.Entry snapshotEntry = recordingLog.getLatestSnapshot(0);
+                final long logPosition = snapshotEntry == null ? 0 : snapshotEntry.logPosition;
+
+                Stream.of(SnapshotMark.BEGIN, SnapshotMark.END).forEach(
+                    mark ->
+                    {
+                        new SnapshotMarkerEncoder()
+                            .wrapAndApplyHeader(cluster.msgBuffer(), 0, new MessageHeaderEncoder())
+                            .typeId(SNAPSHOT_TYPE_ID)
+                            .logPosition(logPosition)
+                            .leadershipTermId(0)
+                            .index(0)
+                            .mark(mark)
+                            .timeUnit(ClusterClock.map(MILLISECONDS))
+                            .appVersion(node.consensusModule().context().appVersion());
+                        publication.offer(cluster.msgBuffer());
+                    });
+
+                for (int x = 0; x < 500; x++)
+                {
+                    cluster.msgBuffer().putInt(0, 1);
+                    publication.offer(cluster.msgBuffer());
+                }
+
+                final long[] recordingIds = { 0 };
+
+                aeronArchive.listRecordingsForUri(0, 10, "new-svc-snapshot", 123 + i,
+                    (controlSessionId, correlationId, recordingId, startTimestamp,
+                    stopTimestamp, startPosition, stopPosition, initialTermId,
+                    segmentFileLength, termBufferLength, mtuLength, sessionId,
+                    streamId, strippedChannel, originalChannel, sourceIdentity) -> recordingIds[0] = recordingId);
+
+                // add the new snapshot to the recording log
+                final RecordingLog.Entry termEntry = recordingLog.findLastTerm();
+                if (null != termEntry)
+                {
+                    recordingLog.appendSnapshot(
+                        recordingIds[0],
+                        termEntry.leadershipTermId,
+                        termEntry.termBaseLogPosition,
+                        logPosition,
+                        termEntry.timestamp,
+                        1);
+                }
+
+                while (aeronArchive.getRecordingPosition(recordingIds[0]) < publication.position())
+                {
+                    Tests.yield();
+                }
+
+                aeronArchive.stopRecording(publication);
+            }
+
+            // restart the node
+            cluster.stopNode(node);
+
+            cluster.startStaticNode(
+                i,
+                false,
+                (x) -> new TestNode.TestService[]{
+                    new TestNode.TestService().index(x),
+                    new TestNode.TestService().index(x + 3) // add a second service
+                });
+        }
+
+        cluster.awaitLeader();
     }
 
     @Test
