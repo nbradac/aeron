@@ -28,18 +28,26 @@
 typedef void (*aeron_idle_strategy_func_t)(void *state, int work_count);
 typedef int (*aeron_idle_strategy_init_func_t)(void **state, const char *env_var, const char *init_args);
 
+typedef enum aeron_driver_managed_resource_event_enum
+{
+    AERON_DRIVER_MANAGED_RESOURCE_EVENT_INCREF,
+    AERON_DRIVER_MANAGED_RESOURCE_EVENT_DECREF,
+    AERON_DRIVER_MANAGED_RESOURCE_EVENT_REVOKE
+}
+aeron_driver_managed_resource_event_t;
+
 typedef struct aeron_driver_managed_resource_stct
 {
     int64_t registration_id;
     int64_t time_of_last_state_change_ns;
     void *clientd;
-    void (*decref)(void *);
-    void (*incref)(void *);
-    // TODO rework this - maybe add a 'managed resource type' enum and use that to determine what function to call when revoking publication?
-    // Should that extend to the decref and incref pointers above?
-    void (*revoke)(void *);
+    void (*manage)(aeron_driver_managed_resource_event_t, void *);
 }
 aeron_driver_managed_resource_t;
+
+#define AERON_DRIVER_MANAGED_RESOURCE_INCREF(_resource) (_resource)->manage(AERON_DRIVER_MANAGED_RESOURCE_EVENT_INCREF, (_resource)->clientd)
+#define AERON_DRIVER_MANAGED_RESOURCE_DECREF(_resource) (_resource)->manage(AERON_DRIVER_MANAGED_RESOURCE_EVENT_DECREF, (_resource)->clientd)
+#define AERON_DRIVER_MANAGED_RESOURCE_REVOKE(_resource) (_resource)->manage(AERON_DRIVER_MANAGED_RESOURCE_EVENT_REVOKE, (_resource)->clientd)
 
 typedef struct aeron_position_stct
 {
