@@ -1,8 +1,14 @@
 package io.aeron.archive.client;
 
-import io.aeron.*;
+import io.aeron.ChannelUri;
+import io.aeron.CommonContext;
+import io.aeron.Counter;
+import io.aeron.Image;
+import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import org.agrona.concurrent.EpochClock;
+
+import static io.aeron.CommonContext.SESSION_ID_PARAM_NAME;
 
 public class ReplayMerge2
 {
@@ -19,10 +25,12 @@ public class ReplayMerge2
 
     private final Image liveImage;
     private final AeronArchive archive;
+    private final int replayStreamId;
     private final long recordingId;
     private final long startPosition;
     private final EpochClock epochClock;
     private final ChannelUri replayChannelUri;
+    private final long minimumWindow;
 
     private State state;
 
@@ -33,26 +41,39 @@ public class ReplayMerge2
         final Image liveImage,
         final AeronArchive archive,
         final String replayChannel,
+        final int replayStreamId,
         final long recordingId,
         final long startPosition,
         final EpochClock epochClock)
     {
         this.liveImage = liveImage;
         this.archive = archive;
+
+        replayChannelUri = ChannelUri.parse(replayChannel);
+        replayChannelUri.put(CommonContext.LINGER_PARAM_NAME, "0");
+        replayChannelUri.put(CommonContext.EOS_PARAM_NAME, "false");
+
+        this.replayStreamId = replayStreamId;
         this.recordingId = recordingId;
         this.startPosition = startPosition;
         this.epochClock = epochClock;
 
-        replayChannelUri = ChannelUri.parse(replayChannel);
-        //replayChannelUri.put(CommonContext.LINGER_PARAM_NAME, "0");
-        //replayChannelUri.put(CommonContext.EOS_PARAM_NAME, "false");
+        minimumWindow = 400;  // TODO should this be a function of the liveImage's termBufferLength?
 
         state = State.REPLAY;
     }
 
     public void close()
     {
-        // TODO
+        if (State.CLOSED != state)
+        {
+            if (null != replaySubscription)
+            {
+                stopReplay();
+            }
+
+            state(State.CLOSED);
+        }
     }
 
     public int doWork()
@@ -62,25 +83,13 @@ public class ReplayMerge2
 
         try
         {
-            switch (state)
+            workCount += switch (state)
             {
-                case REPLAY:
-                    workCount += replay(nowMs);
-                    break;
-
-                case CATCHUP:
-                    workCount += catchup(nowMs);
-                    break;
-
-                case ATTEMPT_LIVE_JOIN:
-                    workCount += attemptLiveJoin(nowMs);
-                    break;
-
-                case MERGED:
-                case CLOSED:
-                case FAILED:
-                    break;
-            }
+                case REPLAY -> replay(nowMs);
+                case CATCHUP -> catchup(nowMs);
+                case ATTEMPT_LIVE_JOIN -> attemptLiveJoin(nowMs);
+                case MERGED, CLOSED, FAILED -> 0;
+            };
         }
         catch (final Exception ex)
         {
@@ -91,41 +100,32 @@ public class ReplayMerge2
         return workCount;
     }
 
+    public boolean isMerged()
+    {
+        return state == State.MERGED;
+    }
+
     public int poll(final FragmentHandler fragmentHandler, final int fragmentLimit)
     {
-        doWork();
+        int workCount = 0;
 
-        int frags;
+        workCount += doWork();
 
-        if (State.CATCHUP == state)
+        workCount += switch (state)
         {
-            frags = replaySubscription.poll(fragmentHandler, fragmentLimit);
-            System.err.println("replay :: " + fragmentLimit + " :: " + frags);
+            case CATCHUP -> replaySubscription.poll(fragmentHandler, fragmentLimit) +
+                liveImage.poll((buffer, offset, length, header) -> {}, fragmentLimit);
+            case ATTEMPT_LIVE_JOIN -> replaySubscription.poll(fragmentHandler, fragmentLimit);
+            case MERGED -> liveImage.poll(fragmentHandler, fragmentLimit);
+            case REPLAY, CLOSED, FAILED -> 0;
+        };
 
-            // drain the live image a bit - TODO or should we drain it 'all the way'??
-            frags = liveImage.poll((buffer, offset, length, header) -> {}, fragmentLimit);
-            System.err.println("drain live image :: " + fragmentLimit + " :: " + frags);
-        }
-        else if (State.ATTEMPT_LIVE_JOIN == state)
-        {
-            frags = replaySubscription.poll(fragmentHandler, fragmentLimit);
-            System.err.println("(ALJ) replay :: " + fragmentLimit + " :: " + frags);
-
-            // stop draining the live image
-        }
-        else if (State.MERGED == state)
-        {
-            // only poll the live image from now on
-            frags = liveImage.poll(fragmentHandler, fragmentLimit);
-            System.err.println("MERGED poll live image :: " + fragmentLimit + " :: " + frags);
-        }
-
-        return 0;
+        return workCount;
     }
 
     private void state(final State newState)
     {
-        System.out.println(state + " -> " + newState);
+        //System.out.println(state + " -> " + newState);
         state = newState;
     }
 
@@ -144,13 +144,14 @@ public class ReplayMerge2
             replaySubscription = archive.replay(
                 recordingId,
                 replayChannelUri.toString(),
-                1234, // TODO
+                replayStreamId,
                 new ReplayParams()
                     .position(startPosition)
                     .boundingLimitCounterId(replayBoundingLimitCounter.id())
             );
 
             state(State.CATCHUP);
+
             workCount += 1;
         }
 
@@ -163,12 +164,9 @@ public class ReplayMerge2
 
         if (replaySubscription.imageCount() > 0)
         {
-            final long replayPosition = replaySubscription.imageAtIndex(0).position();
-            final long livePosition = liveImage.position();
-
             replayBoundingLimitCounter.set(liveImage.position());
 
-            if (livePosition - replayPosition < 100)
+            if (currentWindow() < minimumWindow)
             {
                 state(State.ATTEMPT_LIVE_JOIN);
 
@@ -183,20 +181,32 @@ public class ReplayMerge2
     {
         int workCount = 0;
 
-        final long replayPosition = replaySubscription.imageAtIndex(0).position();
-        final long livePosition = liveImage.position();
-
-        if (livePosition == replayPosition)
+        if (currentWindow() == 0)
         {
             state(State.MERGED);
 
-            // TODO stop the replay...  Just delete the subscription?
-            replaySubscription.close();
-            // archive.stopReplay(0); TODO
+            stopReplay();
 
             workCount += 1;
         }
 
         return workCount;
+    }
+
+    private long currentWindow()
+    {
+        return liveImage.position() - replaySubscription.imageAtIndex(0).position();
+    }
+
+    private void stopReplay()
+    {
+        archive.stopReplay(
+            Long.parseLong(
+                ChannelUri.parse(replaySubscription.channel()).get(SESSION_ID_PARAM_NAME)
+            )
+        );
+
+        replaySubscription.close();
+        replaySubscription = null;
     }
 }

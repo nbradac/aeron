@@ -22,7 +22,6 @@ import io.aeron.archive.status.RecordingPos;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
-import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.test.*;
 import io.aeron.test.driver.TestMediaDriver;
 import org.agrona.CloseHelper;
@@ -78,7 +77,7 @@ class ReplayMerge2Test
             final String expected = MESSAGE_PREFIX + receivedMessageCount.get();
             final String actual = buffer.getStringWithoutLengthAscii(offset, length);
 
-            System.err.println("GOT MESSAGE :: " + actual);
+            //System.err.println("GOT MESSAGE :: " + actual);
 
             assertEquals(expected, actual);
             receivedMessageCount.incrementAndGet();
@@ -162,7 +161,7 @@ class ReplayMerge2Test
             final Subscription subscription = aeron.addSubscription(publicationChannel, STREAM_ID);
             Tests.awaitConnected(subscription);
 
-            ReplayMerge2 rm2 = new ReplayMerge2(
+            final ReplayMerge2 rm2 = new ReplayMerge2(
                 subscription.imageAtIndex(0),
                 aeronArchive,
                 new ChannelUriStringBuilder()
@@ -170,17 +169,18 @@ class ReplayMerge2Test
                     //.controlMode("response")
                     .endpoint("localhost:23300")
                     .toString(),
+                1234,
                 recordingId,
                 0,
                 archive.context().aeron().context().epochClock()
             );
 
-            int idx = 15;
+            int idx = INITIAL_MESSAGE_COUNT;
 
             offerMessage(publication, idx++);
             offerMessage(publication, idx++);
             rm2.poll(fragmentHandler, 10);
-            Thread.sleep(100);
+            Thread.sleep(200);
             rm2.poll(fragmentHandler, 10);
             Thread.sleep(100);
             rm2.poll(fragmentHandler, 10);
@@ -192,12 +192,81 @@ class ReplayMerge2Test
             rm2.poll(fragmentHandler, 10);
             Thread.sleep(100);
             rm2.poll(fragmentHandler, 10);
+
+            assertTrue(rm2.isMerged());
+        }
+    }
+
+    @Test
+    @InterruptAfter(30)
+    void shouldMergeFromReplayToLiveIPC() throws Exception
+    {
+        final String ipcPublicationChannel = new ChannelUriStringBuilder()
+            .media(CommonContext.IPC_MEDIA)
+            .termLength(TERM_LENGTH)
+            .taggedFlowControl(GROUP_TAG, 1, "5s")
+            .build();
+
+        try (Publication publication = aeron.addPublication(ipcPublicationChannel, STREAM_ID))
+        {
+            final String recordingChannel = new ChannelUriStringBuilder()
+                .media(CommonContext.IPC_MEDIA)
+                .sessionId(publication.sessionId())
+                .groupTag(GROUP_TAG)
+                .build();
+
+            aeronArchive.startRecording(recordingChannel, STREAM_ID, REMOTE, true);
+            final CountersReader counters = aeron.countersReader();
+            final int recordingCounterId =
+                Tests.awaitRecordingCounterId(counters, publication.sessionId(), aeronArchive.archiveId());
+            final long recordingId = RecordingPos.getRecordingId(counters, recordingCounterId);
+
+            Tests.awaitConnected(publication);
+            publishMessages(publication);
+            Tests.awaitPosition(counters, recordingCounterId, publication.position());
+
+            final Subscription subscription = aeron.addSubscription(ipcPublicationChannel, STREAM_ID);
+            Tests.awaitConnected(subscription);
+
+            final ReplayMerge2 rm2 = new ReplayMerge2(
+                subscription.imageAtIndex(0),
+                aeronArchive,
+                new ChannelUriStringBuilder()
+                    .media("udp")
+                    //.controlMode("response")
+                    .endpoint("localhost:23300")
+                    .toString(),
+                1234,
+                recordingId,
+                0,
+                archive.context().aeron().context().epochClock()
+            );
+
+            int idx = INITIAL_MESSAGE_COUNT;
+
+            offerMessage(publication, idx++);
+            offerMessage(publication, idx++);
+            rm2.poll(fragmentHandler, 10);
+            Thread.sleep(200);
+            rm2.poll(fragmentHandler, 10);
+            Thread.sleep(100);
+            rm2.poll(fragmentHandler, 10);
+            offerMessage(publication, idx++);
+            offerMessage(publication, idx++);
+            Thread.sleep(100);
+            rm2.poll(fragmentHandler, 10);
+            Thread.sleep(100);
+            rm2.poll(fragmentHandler, 10);
+            Thread.sleep(100);
+            rm2.poll(fragmentHandler, 10);
+
+            assertTrue(rm2.isMerged());
         }
     }
 
     private long offerMessage(final Publication publication, final int index)
     {
-        System.err.println("send message :: " + index);
+        //System.err.println("send message :: " + index);
 
         int length = buffer.putStringWithoutLengthAscii(0, MESSAGE_PREFIX);
         length += buffer.putIntAscii(length, index);
