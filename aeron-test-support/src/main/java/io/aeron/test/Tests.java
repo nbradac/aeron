@@ -262,7 +262,9 @@ public class Tests
      */
     public static void yield()
     {
-        Thread.yield();
+        //Thread.yield();
+        Thread.onSpinWait();
+
         checkInterruptStatus();
     }
 
