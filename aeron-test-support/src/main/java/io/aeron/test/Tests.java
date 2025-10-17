@@ -263,7 +263,15 @@ public class Tests
     public static void yield()
     {
         //Thread.yield();
-        Thread.onSpinWait();
+        //Thread.onSpinWait();
+        try
+        {
+            Thread.sleep(1);
+        }
+        catch (final InterruptedException ignored)
+        {
+
+        }
 
         checkInterruptStatus();
     }
