@@ -164,6 +164,11 @@ class Election
         return leadershipTermId;
     }
 
+    long candidateTermId()
+    {
+        return candidateTermId;
+    }
+
     long logPosition()
     {
         return logPosition;

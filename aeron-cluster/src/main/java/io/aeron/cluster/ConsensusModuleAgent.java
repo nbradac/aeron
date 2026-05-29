@@ -1807,7 +1807,16 @@ final class ConsensusModuleAgent
             logAdapter.poll(stopPosition);
             final long position = logAdapter.position();
 
-            if (commitPosition.proposeMaxRelease(position))
+            // Fix C: do not let raw log application advance the commit position while a higher leadership term is in
+            // flight. A newly-elected leader replaying its own log (logPosition..appendPosition) would otherwise commit
+            // its uncommitted prior-term tail; if a higher term whose base is below that tail has been established, it
+            // is later forced to truncate that now-"committed" data. Per Raft, prior-term entries become committed only
+            // transitively once a current-term entry is committed -- handled by the post-election leader path, not by
+            // replaying the log here.
+            final boolean higherTermInFlight =
+                null != election && election.candidateTermId() > election.leadershipTermId();
+
+            if (!higherTermInFlight && commitPosition.proposeMaxRelease(position))
             {
                 workCount++;
             }
