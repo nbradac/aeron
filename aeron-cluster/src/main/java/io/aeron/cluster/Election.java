@@ -625,6 +625,26 @@ class Election
         final long oldPosition,
         final long newPosition)
     {
+        if (newPosition < commitPosition)
+        {
+            // Safety guard: truncating below the commit position would erase already-committed (and applied) log
+            // data, violating the cluster's durability guarantee. This indicates an upstream protocol fault (e.g. a
+            // higher leadership term established with a term base below this node's committed position). Refuse the
+            // truncation and fail fast rather than silently corrupting the log.
+            throw new ClusterException(
+                "refusing to truncate committed log data: newPosition=" + newPosition +
+                " < commitPosition=" + commitPosition +
+                " memberId=" + memberId +
+                " state=" + state +
+                " logLeadershipTermId=" + logLeadershipTermId +
+                " leadershipTermId=" + leadershipTermId +
+                " candidateTermId=" + candidateTermId +
+                " logPosition=" + logPosition +
+                " appendPosition=" + appendPosition +
+                " oldPosition=" + oldPosition,
+                AeronException.Category.FATAL);
+        }
+
         consensusModuleAgent.truncateLogEntry(logLeadershipTermId, newPosition);
         this.appendPosition = newPosition;
         throw new ClusterEvent("Truncating Cluster Log - memberId=" + memberId +
