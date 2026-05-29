@@ -1348,6 +1348,7 @@ final class ConsensusModuleAgent
             sessionManager.clearSessionsAfter(logPosition, leadershipTermId);
             sessionManager.disconnectSessions();
 
+            diagCommit(1351, logPosition);
             commitPosition.setRelease(logPosition);
             restoreUncommittedEntries(logPosition);
 
@@ -1807,6 +1808,7 @@ final class ConsensusModuleAgent
             logAdapter.poll(stopPosition);
             final long position = logAdapter.position();
 
+            diagCommit(1810, position);
             if (commitPosition.proposeMaxRelease(position))
             {
                 workCount++;
@@ -1883,6 +1885,7 @@ final class ConsensusModuleAgent
 
         final long logPosition = election.logPosition();
         notifiedCommitPosition = max(notifiedCommitPosition, logPosition);
+        diagCommit(1886, logPosition);
         commitPosition.setRelease(logPosition);
         updateMemberDetails(election.leader());
 
@@ -1957,6 +1960,7 @@ final class ConsensusModuleAgent
                 leadershipTermId,
                 currentAppendPosition,
                 APPEND_POSITION_FLAG_CATCHUP);
+            diagCommit(1960, logAdapter.position());
             commitPosition.proposeMaxRelease(logAdapter.position());
         }
 
@@ -2457,6 +2461,7 @@ final class ConsensusModuleAgent
                         return 1;
                     }
 
+                    diagCommit(2460, logAdapter.position());
                     commitPosition.proposeMaxRelease(logAdapter.position());
                     workCount += ingressAdapter.poll();
                     workCount += count;
@@ -2869,6 +2874,16 @@ final class ConsensusModuleAgent
         }
 
         return 0;
+    }
+
+    // DIAGNOSTIC (throwaway): identify which commit-position writer advances commit into the over-commit zone.
+    private void diagCommit(final int site, final long proposed)
+    {
+        if (proposed >= 5161185L)
+        {
+            System.err.println("DIAGCOMMIT site=" + site + " memberId=" + memberId +
+                " proposed=" + proposed + " current=" + commitPosition.getPlain());
+        }
     }
 
     void publishCommitPosition(final long commitPosition, final long leadershipTermId)
