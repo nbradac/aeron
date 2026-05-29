@@ -823,6 +823,22 @@ class Election
     {
         int workCount = 0;
 
+        if (candidateTermId > leadershipTermId)
+        {
+            // Fix B: a higher candidate term is in flight - a newer election has begun (and may already have been won
+            // by another node), observed when this node rejected a higher-term vote request while finalizing
+            // leadership. Replaying our log here applies and commits our uncommitted prior-term tail
+            // (LogReplay -> ConsensusModuleAgent.replayLogPoll -> commitPosition.proposeMaxRelease(logAdapter.position())).
+            // If the higher term's base is below that tail, we would later be forced to truncate committed data. Abandon
+            // finalization and re-canvass under the higher term rather than over-committing prior-term entries.
+            throw new ClusterEvent(
+                "higher term in flight during LEADER_REPLAY - abandoning leadership before committing tail:" +
+                " candidateTermId=" + candidateTermId +
+                " leadershipTermId=" + leadershipTermId +
+                " logPosition=" + logPosition +
+                " appendPosition=" + appendPosition);
+        }
+
         if (null == logReplay)
         {
             if (logPosition < appendPosition)
