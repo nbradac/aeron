@@ -579,8 +579,18 @@ class Election
                 replicationDeadlineNs = nowNs(ctx) + ctx.leaderHeartbeatTimeoutNs();
             }
         }
-        else if (leadershipTermId > this.leadershipTermId && LEADER_READY == state)
+        else if (leadershipTermId > this.leadershipTermId &&
+            (LEADER_LOG_REPLICATION == state || LEADER_REPLAY == state ||
+            LEADER_INIT == state || LEADER_READY == state))
         {
+            // Fix D: yield to an already-elected higher-term leader during ANY leader-finalization state, not just
+            // LEADER_READY. A commit position from a different member at a higher leadership term is proof that a
+            // newer term has been established with its own leader. Previously this only fired at LEADER_READY, so a
+            // node still finalizing leadership (LEADER_LOG_REPLICATION/REPLAY/INIT) would keep acting as a second,
+            // stale leader -- replaying and over-committing its prior-term tail, and emitting term-T messages that
+            // strand followers mid catch-up. Stepping down here (-> handleError -> INIT -> re-canvass) ensures only
+            // one leader is ever active. (onRequestVote's "longer log keeps leading" is deliberately left intact: a
+            // mere higher-term vote request is not proof of an established leader.)
             throw new ClusterEvent("new leader detected due to commit position - " +
                 " memberId=" + thisMemberId() +
                 " this.leadershipTermId=" + this.leadershipTermId +
