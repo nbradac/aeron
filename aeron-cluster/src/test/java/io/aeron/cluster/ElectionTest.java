@@ -20,6 +20,8 @@ import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
 import io.aeron.Subscription;
+import io.aeron.cluster.client.ClusterEvent;
+import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusterMarkFile;
 import io.aeron.exceptions.TimeoutException;
@@ -45,6 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
@@ -1918,6 +1921,64 @@ class ElectionTest
             assertEquals(789, election.notifiedCommitPosition());
             assertEquals(4, election.leadershipTermId());
         }
+    }
+
+    @Test
+    void leaderShouldYieldToEstablishedHigherTermLeaderWhileFinalizing()
+    {
+        // Clean reproduction of the dual-leader root cause (see INVESTIGATION-dual-leader-truncation.md): a node that
+        // won term T but is still FINALIZING leadership must yield the moment it sees proof of an established higher
+        // term, otherwise it remains a second, stale leader -- replaying and over-committing its prior-term tail and
+        // stranding followers. Before fix D this detection only fired in LEADER_READY.
+        final long logPosition = 100;
+        final long leadershipTermId = 7;
+        final ClusterMember[] clusterMembers = prepareClusterMembers();
+        final ClusterMember thisMember = clusterMembers[0];
+        final ClusterMember otherLeader = clusterMembers[1];
+
+        final Election election = newElection(leadershipTermId, logPosition, clusterMembers, thisMember);
+        Tests.setField(election, "leaderMember", thisMember); // this node won term T and is finalizing leadership
+
+        // A commit position from a DIFFERENT member at a HIGHER term == proof a newer term has its own leader.
+        for (final ElectionState finalizingState : new ElectionState[]{
+            ElectionState.LEADER_LOG_REPLICATION, ElectionState.LEADER_REPLAY, ElectionState.LEADER_INIT})
+        {
+            Tests.setField(election, "state", finalizingState);
+
+            final ClusterEvent event = assertThrows(
+                ClusterEvent.class,
+                () -> election.onCommitPosition(leadershipTermId + 1, logPosition, otherLeader.id()),
+                "should yield to an established higher-term leader while finalizing in " + finalizingState);
+
+            assertTrue(
+                event.getMessage().contains("new leader detected"),
+                "unexpected event message: " + event.getMessage());
+        }
+    }
+
+    @Test
+    void shouldRefuseToTruncateLogBelowCommitPosition()
+    {
+        // Clean reproduction of the safety symptom: truncating below the commit position erases already-committed
+        // (and applied) data. Fix A makes this a loud FATAL instead of silent corruption.
+        final ClusterMember[] clusterMembers = prepareClusterMembers();
+        final ClusterMember thisMember = clusterMembers[0];
+        final Election election = newElection(1, 0, clusterMembers, thisMember);
+
+        final long commitPosition = 5000;
+        final long oldPosition = 6000;
+        final long newPosition = 4000; // below the commit position
+
+        final ClusterException ex = assertThrows(
+            ClusterException.class,
+            () -> election.onTruncateLogEntry(
+                thisMember.id(), ElectionState.CANVASS, 1, 1, 2,
+                commitPosition, commitPosition, oldPosition, oldPosition, newPosition));
+
+        assertTrue(
+            ex.getMessage().contains("refusing to truncate committed log data"),
+            "unexpected exception message: " + ex.getMessage());
+        verify(consensusModuleAgent, never()).truncateLogEntry(anyLong(), anyLong());
     }
 
     private Election newElection(
