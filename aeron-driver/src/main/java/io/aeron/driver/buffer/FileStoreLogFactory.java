@@ -38,6 +38,11 @@ public class FileStoreLogFactory implements LogFactory
     private static final String PUBLICATIONS = "publications";
     private static final String IMAGES = "images";
 
+    // INSTRUMENTATION (experiment branch): only log creations slower than this many ms.
+    // Override with -Daeron.instrument.logbuffer.threshold.ms=0 to log every creation.
+    private static final long LOGBUF_INSTRUMENT_THRESHOLD_NS =
+        Long.getLong("aeron.instrument.logbuffer.threshold.ms", 5L) * 1_000_000L;
+
     private final long lowStorageWarningThreshold;
     private final int filePageSize;
     private final boolean checkStorage;
@@ -133,8 +138,24 @@ public class FileStoreLogFactory implements LogFactory
 
         final File location = streamLocation(rootDir, correlationId);
 
-        return new MappedRawLog(
+        // INSTRUMENTATION (experiment branch): time the actual log-buffer file allocation + mmap.
+        // Tagged with the executing thread so we can see whether creation runs on the shared
+        // conductor thread (SHARED mode) or the dedicated aeron-md-nra thread (DEDICATED mode).
+        final long startNs = System.nanoTime();
+        final MappedRawLog rawLog = new MappedRawLog(
             location, useSparseFiles, logLength, termLength, filePageSize, errorHandler, mappedBytesCounter);
+        final long elapsedNs = System.nanoTime() - startNs;
+        if (elapsedNs >= LOGBUF_INSTRUMENT_THRESHOLD_NS)
+        {
+            System.out.println("AERON_INSTRUMENT_LOGBUF dir=" + rootDir.getName() +
+                " corrId=" + correlationId +
+                " lenBytes=" + logLength +
+                " sparse=" + useSparseFiles +
+                " tookMs=" + (elapsedNs / 1_000_000.0) +
+                " thread=" + Thread.currentThread().getName());
+        }
+
+        return rawLog;
     }
 
     private void checkStorage(final long logLength)
