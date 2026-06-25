@@ -2417,6 +2417,8 @@ public final class DriverConductor implements Agent
     {
         if (ChannelEndpointStatus.CLOSING == endpoint.status())
         {
+            System.out.println("AERON_INSTRUMENT_EP_REJECT_CLOSING ep=" + System.identityHashCode(endpoint) +
+                " atNs=" + System.nanoTime());
             throw new ControlProtocolException(
                 RESOURCE_TEMPORARILY_UNAVAILABLE,
                 "SendChannelEndpoint found in CLOSING state, please retry");

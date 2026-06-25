@@ -203,11 +203,16 @@ public class SendChannelEndpoint extends UdpChannelTransport
         statusIndicator.setRelease(ChannelEndpointStatus.ACTIVE);
     }
 
+    private volatile long instrumentClosingStartNs;
+
     /**
      * Indicate that the channel is closing and should not be used for new publications.
      */
     public void indicateClosing()
     {
+        instrumentClosingStartNs = System.nanoTime();
+        System.out.println("AERON_INSTRUMENT_EP_CLOSING_START ep=" + System.identityHashCode(this) +
+            " channel=" + udpChannel + " thread=" + Thread.currentThread().getName());
         statusIndicator.setRelease(ChannelEndpointStatus.CLOSING);
     }
 
@@ -228,6 +233,13 @@ public class SendChannelEndpoint extends UdpChannelTransport
      */
     public void close()
     {
+        final long startNs = instrumentClosingStartNs;
+        if (0 != startNs)
+        {
+            System.out.println("AERON_INSTRUMENT_EP_CLOSED ep=" + System.identityHashCode(this) +
+                " closingMs=" + ((System.nanoTime() - startNs) / 1_000_000.0) +
+                " channel=" + udpChannel + " thread=" + Thread.currentThread().getName());
+        }
         super.close();
         CloseHelper.close(errorHandler, statusIndicator);
         CloseHelper.close(errorHandler, localSocketAddressIndicator);
