@@ -258,13 +258,31 @@ public final class DriverConductor implements Agent
         trackTime(nowNs);
 
         int workCount = 0;
+        final long t0 = nanoClock.nanoTime();
         workCount += processTimers(nowNs);
+        final long t1 = nanoClock.nanoTime();
         workCount += processClientCommands();
+        final long t2 = nanoClock.nanoTime();
         workCount += drainCommandQueue();
+        final long t3 = nanoClock.nanoTime();
         workCount += trackStreamPositions(workCount, nowNs);
+        final long t4 = nanoClock.nanoTime();
         if (null != nativeResourceAgentInvoker)
         {
             nativeResourceAgentInvoker.invoke();
+        }
+        final long t5 = nanoClock.nanoTime();
+
+        // INSTRUMENTATION: where does a slow conductor doWork cycle spend its time?
+        final long totalNs = t5 - t0;
+        if (totalNs >= CYCLE_INSTRUMENT_THRESHOLD_NS)
+        {
+            System.out.println("AERON_INSTRUMENT_CYCLE totalMs=" + (totalNs / 1_000_000.0) +
+                " timers=" + ((t1 - t0) / 1_000_000.0) +
+                " clientCmd=" + ((t2 - t1) / 1_000_000.0) +
+                " drain=" + ((t3 - t2) / 1_000_000.0) +
+                " track=" + ((t4 - t3) / 1_000_000.0) +
+                " nraInvoke=" + ((t5 - t4) / 1_000_000.0));
         }
 
         return workCount;
@@ -1387,6 +1405,8 @@ public final class DriverConductor implements Agent
     private int clientCommandCycles;
     private static final long CMD_INSTRUMENT_THRESHOLD_NS =
         Long.getLong("aeron.instrument.command.threshold.ms", 20L) * 1_000_000L;
+    private static final long CYCLE_INSTRUMENT_THRESHOLD_NS =
+        Long.getLong("aeron.instrument.cycle.threshold.ms", 10L) * 1_000_000L;
 
     private void scheduleDriverCommand(final Command cmd)
     {
