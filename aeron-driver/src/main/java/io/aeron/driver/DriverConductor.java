@@ -1377,7 +1377,16 @@ public final class DriverConductor implements Agent
         }
 
         clientCommand = cmd;
+        clientCommandStartNs = nanoClock.nanoTime();
+        clientCommandCycles = 0;
     }
+
+    // INSTRUMENTATION: how long a single client command holds the one-at-a-time slot, and over
+    // how many conductor duty cycles. Only the conductor thread touches these.
+    private long clientCommandStartNs;
+    private int clientCommandCycles;
+    private static final long CMD_INSTRUMENT_THRESHOLD_NS =
+        Long.getLong("aeron.instrument.command.threshold.ms", 20L) * 1_000_000L;
 
     private void scheduleDriverCommand(final Command cmd)
     {
@@ -2219,11 +2228,21 @@ public final class DriverConductor implements Agent
         if (null != clientCommand)
         {
             ++workCount;
+            ++clientCommandCycles;
 
             try
             {
                 if (clientCommand.execute())
                 {
+                    // INSTRUMENTATION: this command held the single client-command slot until now.
+                    final long elapsedNs = nanoClock.nanoTime() - clientCommandStartNs;
+                    if (elapsedNs >= CMD_INSTRUMENT_THRESHOLD_NS)
+                    {
+                        System.out.println("AERON_INSTRUMENT_CMD type=" + clientCommand.getClass().getSimpleName() +
+                            " corrId=" + clientCommand.correlationId +
+                            " cycles=" + clientCommandCycles +
+                            " heldMs=" + (elapsedNs / 1_000_000.0));
+                    }
                     clientCommand = null;
                 }
             }
