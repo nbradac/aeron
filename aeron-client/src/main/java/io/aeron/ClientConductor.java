@@ -1806,7 +1806,8 @@ final class ClientConductor implements Agent
 
     private void awaitResponse(final long correlationId)
     {
-        final long nowNs = nanoClock.nanoTime();
+        final long startNs = nanoClock.nanoTime();
+        final long nowNs = startNs;
         final long deadlineNs = nowNs + driverTimeoutNs;
         checkTimeouts(nowNs);
 
@@ -1826,6 +1827,16 @@ final class ClientConductor implements Agent
 
             if (driverEventsAdapter.receivedCorrelationId() == correlationId)
             {
+                // INSTRUMENTATION: a client blocked here waiting for the driver to reply to a
+                // command. Normally sub-ms; a long block means the conductor was slow to respond.
+                final long elapsedNs = nanoClock.nanoTime() - startNs;
+                if (elapsedNs >= AWAIT_INSTRUMENT_THRESHOLD_NS)
+                {
+                    System.out.println("AERON_INSTRUMENT_AWAIT corrId=" + correlationId +
+                        " elapsedMs=" + (elapsedNs / 1_000_000.0) +
+                        " thread=" + Thread.currentThread().getName());
+                }
+
                 stashedChannelByRegistrationId.remove(correlationId);
                 final RegistrationException ex = driverException;
                 if (null != ex)
@@ -1845,9 +1856,17 @@ final class ClientConductor implements Agent
         }
         while (deadlineNs - nanoClock.nanoTime() > 0);
 
+        // INSTRUMENTATION: hard timeout waiting for a driver command reply.
+        System.out.println("AERON_INSTRUMENT_AWAIT_TIMEOUT corrId=" + correlationId +
+            " waitedMs=" + (driverTimeoutNs / 1_000_000.0) +
+            " thread=" + Thread.currentThread().getName());
+
         throw new DriverTimeoutException("no response from MediaDriver within " +
             SystemUtil.formatDuration(driverTimeoutNs));
     }
+
+    private static final long AWAIT_INSTRUMENT_THRESHOLD_NS =
+        Long.getLong("aeron.instrument.await.threshold.ms", 100L) * 1_000_000L;
 
     private int checkTimeouts(final long nowNs)
     {
