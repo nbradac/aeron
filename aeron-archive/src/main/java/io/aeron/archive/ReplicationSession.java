@@ -967,6 +967,10 @@ class ReplicationSession implements Session, RecordingDescriptorConsumer
 
     private void state(final State newState, final String reason)
     {
+        System.out.println("AERON_INSTRUMENT_REPL_STATE " + state + "->" + newState +
+            " replId=" + replicationId + " srcRec=" + srcRecordingId +
+            " pos=" + (null != image ? image.position() : NULL_POSITION) +
+            " reason=" + (null == reason ? "" : reason));
         logStateChange(state, newState, replicationId,
             srcRecordingId, dstRecordingId,
             null != image ? image.position() : NULL_POSITION,

@@ -1826,6 +1826,14 @@ final class ClientConductor implements Agent
 
             if (driverEventsAdapter.receivedCorrelationId() == correlationId)
             {
+                final long elapsedNs = nanoClock.nanoTime() - nowNs;
+                if (elapsedNs >= 100_000_000L)
+                {
+                    System.out.println("AERON_INSTRUMENT_AWAIT corrId=" + correlationId +
+                        " elapsedMs=" + (elapsedNs / 1_000_000.0) +
+                        " thread=" + Thread.currentThread().getName());
+                }
+
                 stashedChannelByRegistrationId.remove(correlationId);
                 final RegistrationException ex = driverException;
                 if (null != ex)

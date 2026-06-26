@@ -48,6 +48,7 @@ class StandbySnapshotReplicator implements AutoCloseable
     private ArrayList<SnapshotReplicationEntry> snapshotsToReplicate;
     private SnapshotReplicationEntry currentSnapshotToReplicate;
     private boolean isComplete = false;
+    private long instrumentLastLogNs;
 
     StandbySnapshotReplicator(
         final int memberId,
@@ -154,9 +155,18 @@ class StandbySnapshotReplicator implements AutoCloseable
         }
         catch (final ArchiveException | ClusterException ex)
         {
+            System.out.println("AERON_INSTRUMENT_SNAPREPL_ERROR endpoint=" +
+                currentSnapshotToReplicate.endpoint + " msg=" + ex.getMessage());
             errorsByEndpoint.put(currentSnapshotToReplicate.endpoint, ex.getMessage());
             CloseHelper.quietClose(recordingReplication);
             recordingReplication = null;
+        }
+
+        if (null != recordingReplication && (nowNs - instrumentLastLogNs) > 5_000_000_000L)
+        {
+            instrumentLastLogNs = nowNs;
+            System.out.println("AERON_INSTRUMENT_SNAPREPL_HEARTBEAT endpoint=" +
+                currentSnapshotToReplicate.endpoint + " complete=" + recordingReplication.isComplete());
         }
 
         if (null != recordingReplication && recordingReplication.isComplete())
