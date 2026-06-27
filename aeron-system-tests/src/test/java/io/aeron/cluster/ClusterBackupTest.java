@@ -664,11 +664,16 @@ class ClusterBackupTest
         cluster.awaitBackupLiveLogPosition(cluster.findLeader().service().cluster().logPosition());
     }
 
-    @Test
+    @org.junit.jupiter.api.RepeatedTest(100)
     @InterruptAfter(30)
     void shouldQueryForSnapshotsWithLogPosition()
     {
-        final TestCluster cluster = aCluster().withStaticNodes(3).start();
+        // EXPERIMENT: tighten the leader heartbeat timeout so a loaded runner triggers more frequent
+        // elections, stress-testing whether backup queries (dropped by onBackupQuery while election != null)
+        // recover via the harness re-send loop.
+        final TestCluster cluster = aCluster().withStaticNodes(3)
+            .withLeaderHeartbeatTimeoutNs(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(1000))
+            .start();
         systemTestWatcher.cluster(cluster);
         final TestNode leader = cluster.awaitLeader();
 

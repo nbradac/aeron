@@ -1193,6 +1193,16 @@ final class ConsensusModuleAgent
                     encodedCredentials,
                     header);
             }
+            else
+            {
+                System.out.println("[BACKUP-QUERY-DROP] memberId=" + memberId +
+                    " reason=state correlationId=" + correlationId + " state=" + state);
+            }
+        }
+        else
+        {
+            System.out.println("[BACKUP-QUERY-DROP] memberId=" + memberId +
+                " reason=election correlationId=" + correlationId + " state=" + state);
         }
     }
 

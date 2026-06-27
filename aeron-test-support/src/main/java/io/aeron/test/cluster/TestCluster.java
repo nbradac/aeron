@@ -2558,12 +2558,16 @@ public final class TestCluster implements AutoCloseable
         private final Publication publication;
         private final String responseChannel;
         private final Aeron aeron;
+        private final TestNode node;
+        private final String consensusEndpoint;
 
         BackupQueryRunner(final TestNode node)
         {
+            this.node = node;
+            this.consensusEndpoint = clusterConsensusEndpoints(node.memberId(), node.memberId() + 1);
             final String channel = new ChannelUriStringBuilder()
                 .media("udp")
-                .endpoint(clusterConsensusEndpoints(node.memberId(), node.memberId() + 1))
+                .endpoint(consensusEndpoint)
                 .termLength(64 * 1024)
                 .build();
 
@@ -2604,6 +2608,7 @@ public final class TestCluster implements AutoCloseable
 
             final MutableBoolean found = new MutableBoolean(false);
             final MutableBoolean matches = new MutableBoolean(false);
+            final MutableInteger backupResponsesSeen = new MutableInteger(0);
 
             final FragmentHandler handler = (buffer, offset, length, header) ->
             {
@@ -2620,6 +2625,8 @@ public final class TestCluster implements AutoCloseable
                 }
 
                 backupResponseDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+
+                backupResponsesSeen.increment();
 
                 if (correlationId != backupResponseDecoder.correlationId())
                 {
@@ -2642,22 +2649,80 @@ public final class TestCluster implements AutoCloseable
             // Re-send the query while waiting for a response. A single query can be missed if it reaches
             // the cluster before a member is ready to answer it (for example during an election), even if
             // 'offer' succeeded.
+            final long startNs = System.nanoTime();
+            final MutableLong lastOfferRc = new MutableLong(0);
+            final MutableLong offers = new MutableLong(0);
+            final MutableLong loops = new MutableLong(0);
+            long nextDiagNs = startNs;
             long nextQueryDeadlineNs = 0;
-            while (!found.get())
+            try
             {
-                if (System.nanoTime() - nextQueryDeadlineNs >= 0 &&
-                    publication.offer(expandableArrayBuffer, 0, requestLength) > 0)
+                while (!found.get())
                 {
-                    nextQueryDeadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
-                }
+                    loops.increment();
+                    if (System.nanoTime() - nextQueryDeadlineNs >= 0)
+                    {
+                        lastOfferRc.set(publication.offer(expandableArrayBuffer, 0, requestLength));
+                        if (lastOfferRc.get() > 0)
+                        {
+                            offers.increment();
+                            nextQueryDeadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
+                        }
+                    }
 
-                if (0 == subscription.poll(handler, 10))
-                {
-                    Tests.yield();
+                    if (System.nanoTime() - nextDiagNs >= 0)
+                    {
+                        logDiag("WAIT", startNs, found, matches, lastOfferRc, offers, loops,
+                            backupResponsesSeen, logPosition);
+                        nextDiagNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+                    }
+
+                    if (0 == subscription.poll(handler, 10))
+                    {
+                        Tests.yield();
+                    }
                 }
+            }
+            finally
+            {
+                logDiag("EXIT", startNs, found, matches, lastOfferRc, offers, loops,
+                    backupResponsesSeen, logPosition);
             }
 
             assertTrue(matches.get());
+        }
+
+        private void logDiag(
+            final String label,
+            final long startNs,
+            final MutableBoolean found,
+            final MutableBoolean matches,
+            final MutableLong lastOfferRc,
+            final MutableLong offers,
+            final MutableLong loops,
+            final MutableInteger backupResponsesSeen,
+            final long logPosition)
+        {
+            System.out.println("[BACKUP-QUERY-DIAG] " + label + " target=" + consensusEndpoint +
+                " targetRole=" + safeRole(node) + " found=" + found.get() + " matches=" + matches.get() +
+                " elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs) +
+                " pubConnected=" + publication.isConnected() + " pubStatus=" + publication.channelStatus() +
+                " lastOfferRc=" + lastOfferRc.get() + " offers=" + offers.get() +
+                " subConnected=" + subscription.isConnected() + " subImages=" + subscription.imageCount() +
+                " backupResponsesSeen=" + backupResponsesSeen.get() + " loops=" + loops.get() +
+                " logPosition=" + logPosition);
+        }
+
+        private static String safeRole(final TestNode node)
+        {
+            try
+            {
+                return node.role().toString();
+            }
+            catch (final RuntimeException ex)
+            {
+                return "unknown(" + ex.getClass().getSimpleName() + ")";
+            }
         }
 
         public void close()
